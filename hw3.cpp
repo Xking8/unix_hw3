@@ -35,7 +35,8 @@ typedef struct npipe_msg
 
 void shell_service();
 int cmd_parser(char*,cmd_t*);
-void exec_cmd(cmd_t,int,int,int[][2],int,npipe_msg_t*,int[2],int,int[2],int,bool);
+void exec_cmd(cmd_t,int,int,int[][2],int[][2],int);
+//void exec_cmd(cmd_t,int,int,int[][2],int,npipe_msg_t*,int[2],int,int[2],int,bool);
 void reaper();
 
 void move_npipemsg(npipe_msg_t*);
@@ -71,6 +72,7 @@ void shell_service() {
 		//int pipeA[2][2];
 		//int **pipeA;
 		int pipeTurn=0;
+		int pipeN[1000][2];
 
 		//int pipeN[1000][2];
 		//if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
@@ -81,7 +83,7 @@ void shell_service() {
 		//pipeA[0] = malloc(2*sizeof(int));
 		//pipeA[1] = malloc(2*sizeof(int));
 		
-		move_npipemsg(npipe_msg);
+		//move_npipemsg(npipe_msg);
 
 		if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
 			fprintf(stderr,"pipe create error\n");
@@ -107,7 +109,56 @@ void shell_service() {
 			}
 
 
-		int i;		
+		int i;
+		for(i=0;i<num_of_cmd;i++)
+		{
+
+			dup2(stdin_hlr,0);
+			printf("###stdin_hlr:%d\n",stdin_hlr);
+			printf("processing %dth cmd\n",i);
+			/*if(pipeTurn==0)
+				if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
+					fprintf(stderr,"pipe create error\n");
+			*/
+			readpipe=-1;
+			writepipe=-1;
+			if(i>0) //get stdin from pipe
+			{	
+				readpipe=pipeTurn;
+				pipeTurn=(pipeTurn+1)%2;
+				if(pipe(pipeA[pipeTurn])<0)
+					fprintf(stderr,"pipe create error\n");
+				else
+					printf("*****************create pipe[%d]\n",pipeTurn);
+
+			}	
+			if(i<num_of_cmd-1) //pipe stdout to pipe
+			{
+			
+				writepipe=pipeTurn;
+			}
+			else
+			{
+				if(isdigit(cmd[i].arg[0][0]))//pipe stdout to pipeN
+				{
+					int count=atoi(cmd[i].arg[0]);
+					//writepipe=
+				}
+				else //write to sockfd
+				{
+
+				}
+			}
+			printf("$$$$$$$$$$$$$$$$$$$$$$$$$pipeA [0][0]=%d [0][1]=%d [1][0]=%d [1][1]=%d\n",pipeA[0][0],pipeA[0][1],pipeA[1][0],pipeA[1][1]);
+			exec_cmd(cmd[i],readpipe,writepipe,pipeA,pipeN,STDOUT_FILENO);
+		}
+		/*close(pipeA[0][0]);
+		close(pipeA[0][1]);
+		close(pipeA[1][0]);
+		close(pipeA[1][1]);*/
+
+	}//end of while
+		/*
 		for(i=0;i<num_of_cmd;i++)
 		{
 			int exe_ind=i;
@@ -174,29 +225,128 @@ void shell_service() {
 			//printf("$$$pipeA [0][0]=%d [0][1]=%d [1][0]=%d [1][1]=%d\n",pipeA[0][0],pipeA[0][1],pipeA[1][0],pipeA[1][1]);
 			//printf("$$$Wnumpipe[0]=%d Wnumpipe[1]=%d\n",Wnumberpipe[0],Wnumberpipe[1]);
 			exec_cmd(cmd[exe_ind],readpipe,writepipe,pipeA,npipe_count,npipe_msg,Wnumberpipe,rnpipe,Rnumberpipe,fileno(stdout),exclamation);
-		}
+		}*/
 	
 
-	}//end of while
+	//}//end of while
 	
 
 }
+void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int pipeN[][2],int sockfd)
+//void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int** pipeA, int pipeN[][2],int sockfd)
+{
+	int pid;
+	char filename[256];
+	signal(SIGTTOU, SIG_IGN);
+	pid=fork();
+	//signal(SIGTTOU, SIG_IGN);
+	if(pid==0)
+	{
+		setpgid(0,getpid());
+		tcsetpgrp(STDIN_FILENO,getpgrp());
+		//raise(SIGSTOP);
+		//kill(getpid(),SIGCONT);
+		int readfd=STDIN_FILENO;
+		int writefd=sockfd;
+		printf("-----------strlen=%d\n",strlen(cmd.arg[0]));
+		//printf("!!!!!cmd.arg[0][2]=%c!!!!\n",cmd.arg[0][2]);
+		printf("readpipe=%d writepipe=%d\n",readpipe,writepipe);	
+		//cmd.arg[0][2]=0;
+		//printf("!!!!!cmd.arg[0][2]=%s\n",cmd.arg[0][2]);
+		//strcpy(filename,"/net/other/2017_1/0550722/ras/bin/");		
+		strcpy(filename,cmd.arg[0]);
+		if(readpipe!=-1)
+		{	
+			//printf("innnnnnnnnnnnnnnn\n");
+			close(pipeA[readpipe][1]);
+			//printf("after close\n");
+			//char tbuff[256];
+			//read(pipeA[readpipe][0],tbuff,256);
+			//printf("~~~~~~~~~~~~tbuff=%s\n",tbuff);
+			dup2(pipeA[readpipe][0],STDIN_FILENO);
+			close(pipeA[readpipe][0]);
+			pipeA[readpipe][0]=-1;
+			//close(pipeA[0][1]);
+			//dup2(pipeA[0][0],STDIN_FILENO);
 
+		}
+		if(writepipe!=-1)
+		{
+			close(pipeA[writepipe][0]);
+			dup2(pipeA[writepipe][1],STDOUT_FILENO);
+			//close(pipeA[writepipe][1]);
+		}
+		else
+		{
+
+			printf("@@@@@@@@\n");
+			dup2(sockfd,STDOUT_FILENO);
+		}
+		//printf("filename=%s\n",filename);
+		//printf("cmd.arg[0]=%s\ncmd.arg[1]=%s\n",cmd.arg[0],cmd.arg[1]);
+		execvp(filename,cmd.arg);
+		//char* targ[]={"ls",(char*)0};
+		//execve("/net/other/2017_1/0550722/ras/bin/ls",targ,envp);
+		exit(0);
+
+	}
+	else
+	{
+		setpgid(pid,pid);
+		tcsetpgrp(0,pid);
+		if(readpipe!=-1)
+		{
+			if(pipeA[readpipe][1]!=-1)
+			{
+				close(pipeA[readpipe][1]);
+				//close(pipeA[readpipe][0]);
+				pipeA[readpipe][1]=-1;//must assign -1 when close otherwise will be ambiguise
+				printf("assign pipeA[%d][1]=%d liao\n",readpipe,pipeA[readpipe][1]);
+			}
+			
+			close(pipeA[readpipe][0]);
+			pipeA[readpipe][0]=-1;
+			printf("assign pipeA[%d][0]=%d liao\n",readpipe,pipeA[readpipe][0]);
+		}
+		if(writepipe!=-1)
+			if(pipeA[writepipe][1]!=-1)
+			{
+				close(pipeA[writepipe][1]);
+				pipeA[writepipe][1]=-1;
+				printf("assign pipeA[%d][1]=%d liao\n",writepipe,pipeA[writepipe][1]);
+			}
+		//close(pipeA[readpipe][0]);
+		//close(pipeA[readpipe][0]);
+		printf("before wait\n");
+		wait(0);
+		tcsetpgrp(STDIN_FILENO,getpid());
+		//if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
+		//	fprintf(stderr,"pipe create error\n");
+
+		//char tbuff[20];
+		//read(pipeA[writepipe][0],tbuff,20);
+		//printf("!~~~~~~~~~~~~tbuff=%s\n",tbuff);
+
+		printf("after wait\n");
+	}
+
+	
+
+}
+/*
 void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int npipe_count, npipe_msg_t* npipe_msg,int Wnumberpipe[2],int rnpipe,int Rnumberpipe[2],int sockfd,bool excla)
 //void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int** pipeA, int pipeN[][2],int sockfd)
 {
 	int pid;
 	char filename[256];
+	setpgid(0,getpid());
 	pid=fork();
 	if(pid==0)
 	{
         setpgid(0,getpid());
-        tcsetpgrp(astdin,getpid());
-        tcsetpgrp(fileno(stdout),getpid());
+        //tcsetpgrp(astdin,getpid());
+        //tcsetpgrp(fileno(stdout),getpid());
         printf("???????????????????");
-		/*setsid();
-		chdir("/"); 
-    	umask(0);*/
 		int readfd=STDIN_FILENO;
 		int writefd=sockfd;
 		//printf("-----------strlen=%d\n",strlen(cmd.arg[0]));
@@ -340,7 +490,7 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int npipe_
 
 }
 
-
+*/
 int cmd_parser(char* line, cmd_t* cmd)
 {
 	int ind=0;
@@ -450,7 +600,11 @@ void move_npipemsg(npipe_msg_t* npipe_msg)
 void reaper()
 {
     int status;
+	//kill(getpid(), SIGCONT);
+	//tcsetpgrp(STDIN_FILENO,getpgrp());
+	printf("in reaper!!!!!!!!!!!!!!!!1\n");
     while(waitpid(0,&status,WNOHANG)>=0)
-        ;
+		printf("r's while!!\n");
+        
 }
 
