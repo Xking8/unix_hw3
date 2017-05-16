@@ -17,14 +17,16 @@
 int outfd = fileno(stdout);
 int stdin_hlr;
 int astdin = dup(0);
-FILE *fp1; //to cat > file.txt
-
+FILE *fp1; //to cat mm.txt > file.txt
+FILE *fpin; // cat < mm.txt
 typedef struct cmd
 {
     char* wholeline;
     char* arg[256];
     char filename[256];
     bool arrow;
+	bool backarrow;
+	bool bkgd;
 
 }cmd_t;
 typedef struct npipe_msg
@@ -62,7 +64,7 @@ void shell_service() {
 		write(outfd,"shell-prompt$ ",14);
 		fgets(line,MAXLINE,stdin);
 		line[strlen(line)-1]=0;
-		printf("%s.\n",line);
+		//printf("%s.\n",line);
 		int num_of_cmd=cmd_parser(line,cmd);
 		int pipeA[2][2]={{-1,-1},{-1,-1}};
 		int Wnumberpipe[2]={-1,-1};
@@ -114,8 +116,8 @@ void shell_service() {
 		{
 
 			dup2(stdin_hlr,0);
-			printf("###stdin_hlr:%d\n",stdin_hlr);
-			printf("processing %dth cmd\n",i);
+			//printf("###stdin_hlr:%d\n",stdin_hlr);
+			//printf("processing %dth cmd\n",i);
 			/*if(pipeTurn==0)
 				if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
 					fprintf(stderr,"pipe create error\n");
@@ -129,7 +131,8 @@ void shell_service() {
 				if(pipe(pipeA[pipeTurn])<0)
 					fprintf(stderr,"pipe create error\n");
 				else
-					printf("*****************create pipe[%d]\n",pipeTurn);
+					//printf("*****************create pipe[%d]\n",pipeTurn);
+					;
 
 			}	
 			if(i<num_of_cmd-1) //pipe stdout to pipe
@@ -149,7 +152,7 @@ void shell_service() {
 
 				}
 			}
-			printf("$$$$$$$$$$$$$$$$$$$$$$$$$pipeA [0][0]=%d [0][1]=%d [1][0]=%d [1][1]=%d\n",pipeA[0][0],pipeA[0][1],pipeA[1][0],pipeA[1][1]);
+			//printf("$$$$$$$$$$$$$$$$$$$$$$$$$pipeA [0][0]=%d [0][1]=%d [1][0]=%d [1][1]=%d\n",pipeA[0][0],pipeA[0][1],pipeA[1][0],pipeA[1][1]);
 			exec_cmd(cmd[i],readpipe,writepipe,pipeA,pipeN,STDOUT_FILENO);
 		}
 		/*close(pipeA[0][0]);
@@ -235,22 +238,31 @@ void shell_service() {
 void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int pipeN[][2],int sockfd)
 //void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int** pipeA, int pipeN[][2],int sockfd)
 {
+	//dup2(sockfd,STDERR_FILENO);
 	int pid;
 	char filename[256];
-	signal(SIGTTOU, SIG_IGN);
 	pid=fork();
 	//signal(SIGTTOU, SIG_IGN);
 	if(pid==0)
 	{
-		setpgid(0,getpid());
-		tcsetpgrp(STDIN_FILENO,getpgrp());
+		if(cmd.bkgd)
+		{
+			printf("call setsid\n");
+			fflush(stdout);
+			setsid();
+		}
+		else
+		{
+			setpgid(0,getpid());
+			tcsetpgrp(STDIN_FILENO,getpgrp());
+		}
 		//raise(SIGSTOP);
 		//kill(getpid(),SIGCONT);
 		int readfd=STDIN_FILENO;
 		int writefd=sockfd;
-		printf("-----------strlen=%d\n",strlen(cmd.arg[0]));
+		//printf("-----------strlen=%d\n",strlen(cmd.arg[0]));
 		//printf("!!!!!cmd.arg[0][2]=%c!!!!\n",cmd.arg[0][2]);
-		printf("readpipe=%d writepipe=%d\n",readpipe,writepipe);	
+		//printf("readpipe=%d writepipe=%d\n",readpipe,writepipe);	
 		//cmd.arg[0][2]=0;
 		//printf("!!!!!cmd.arg[0][2]=%s\n",cmd.arg[0][2]);
 		//strcpy(filename,"/net/other/2017_1/0550722/ras/bin/");		
@@ -270,16 +282,28 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int pipeN[
 			//dup2(pipeA[0][0],STDIN_FILENO);
 
 		}
+		else if (cmd.backarrow)
+        {
+            printf("**************dup fpin to stdIN\n");
+            dup2(fileno(fpin),STDIN_FILENO);
+        }
+
 		if(writepipe!=-1)
 		{
 			close(pipeA[writepipe][0]);
 			dup2(pipeA[writepipe][1],STDOUT_FILENO);
 			//close(pipeA[writepipe][1]);
 		}
+		else if (cmd.arrow)
+        {
+            //printf("**************dup fp1 to stdout\n");
+            dup2(fileno(fp1),STDOUT_FILENO);
+        }
+
 		else
 		{
 
-			printf("@@@@@@@@\n");
+			//printf("@@@@@@@@\n");
 			dup2(sockfd,STDOUT_FILENO);
 		}
 		//printf("filename=%s\n",filename);
@@ -292,8 +316,12 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int pipeN[
 	}
 	else
 	{
-		setpgid(pid,pid);
-		tcsetpgrp(0,pid);
+		signal(SIGTTOU, SIG_IGN);
+		if(!cmd.bkgd) 
+		{
+			setpgid(pid,pid);
+			tcsetpgrp(0,pid);
+		}
 		if(readpipe!=-1)
 		{
 			if(pipeA[readpipe][1]!=-1)
@@ -301,23 +329,23 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int pipeN[
 				close(pipeA[readpipe][1]);
 				//close(pipeA[readpipe][0]);
 				pipeA[readpipe][1]=-1;//must assign -1 when close otherwise will be ambiguise
-				printf("assign pipeA[%d][1]=%d liao\n",readpipe,pipeA[readpipe][1]);
+				//printf("assign pipeA[%d][1]=%d liao\n",readpipe,pipeA[readpipe][1]);
 			}
 			
 			close(pipeA[readpipe][0]);
 			pipeA[readpipe][0]=-1;
-			printf("assign pipeA[%d][0]=%d liao\n",readpipe,pipeA[readpipe][0]);
+			//printf("assign pipeA[%d][0]=%d liao\n",readpipe,pipeA[readpipe][0]);
 		}
 		if(writepipe!=-1)
 			if(pipeA[writepipe][1]!=-1)
 			{
 				close(pipeA[writepipe][1]);
 				pipeA[writepipe][1]=-1;
-				printf("assign pipeA[%d][1]=%d liao\n",writepipe,pipeA[writepipe][1]);
+				//printf("assign pipeA[%d][1]=%d liao\n",writepipe,pipeA[writepipe][1]);
 			}
 		//close(pipeA[readpipe][0]);
 		//close(pipeA[readpipe][0]);
-		printf("before wait\n");
+		//printf("before wait\n");
 		wait(0);
 		tcsetpgrp(STDIN_FILENO,getpid());
 		//if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
@@ -327,7 +355,7 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int pipeN[
 		//read(pipeA[writepipe][0],tbuff,20);
 		//printf("!~~~~~~~~~~~~tbuff=%s\n",tbuff);
 
-		printf("after wait\n");
+		//printf("after wait\n");
 	}
 
 	
@@ -494,7 +522,12 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int npipe_
 int cmd_parser(char* line, cmd_t* cmd)
 {
 	int ind=0;
+	if(line[0]==0)
+	{
+		return 0;
+	}
 	cmd[0].wholeline=strtok(line,"|!\n\r");
+	
 	for(ind=1;ind<1000;ind++)
 	{
 		cmd[ind].wholeline=strtok(NULL,"|!\n\r");
@@ -520,7 +553,7 @@ int cmd_parser(char* line, cmd_t* cmd)
 	}
 	//sleep(1);
 	//printf("arg[%d]=%s length=%d\n",1,arg[1],strlen(arg[1]));
-	printf("now's ind=%d, tmp_cmd[ind]=%s ..\n",ind,cmd[ind].wholeline);
+	//printf("now's ind=%d, tmp_cmd[ind]=%s ..\n",ind,cmd[ind].wholeline);
 	//arg[i-1]=(char*)(0);
 	//arg[i-1]="\n";
 	//printf("After assign null to arg[i-1], arg[i-1]=%s ,,\n",arg[i-1]);
@@ -537,16 +570,30 @@ int cmd_parser(char* line, cmd_t* cmd)
 	for(i=0;i<ind;i++)
 	{
 		cmd[i].arrow=0;
+		cmd[i].backarrow=0;
+		cmd[i].bkgd=0;
 		cmd[i].arg[0]=strtok(cmd[i].wholeline," \n");
 		for(j=1;j<256;j++)
 		{
 			cmd[i].arg[j]=strtok(NULL," \n");
+			if(!strcmp(cmd[i].arg[j-1],"&"))
+			{
+				cmd[i].bkgd=1;
+				//cmd[i].arg[j-1]=(char*)0;
+			}
 			if(!strcmp(cmd[i].arg[j-1],">"))
 			{
 				//strcpy(cmd[i].arg[j-1],cmd[i].arg[j]);
 				//j--;
 				fp1=fopen(cmd[i].arg[j],"w+");
 				cmd[i].arrow=1;
+			}
+			if(!strcmp(cmd[i].arg[j-1],"<"))
+			{
+				//strcpy(cmd[i].arg[j-1],cmd[i].arg[j]);
+				//j--;
+				fpin=fopen(cmd[i].arg[j],"rb+");
+				cmd[i].backarrow=1;
 			}
 			else if(!strcmp(cmd[i].arg[j-1],">>"))
 			{
@@ -555,27 +602,29 @@ int cmd_parser(char* line, cmd_t* cmd)
 				fp1=fopen(cmd[i].arg[j],"a+");
 				cmd[i].arrow=1;
 			}
-
 			if(cmd[i].arg[j]==NULL)
 			{
-				printf("at %d %d break\n",i,j);
+				//printf("at %d %d break\n",i,j);
 				break;
 			}
 		}
 		cmd[i].arg[j]=(char*)0;
-		if(cmd[i].arrow==1)
+		if(cmd[i].arrow==1 ||cmd[i].backarrow==1 )
 		{
 			cmd[i].arg[j-1]=(char*)0;
 
 			cmd[i].arg[j-2]=(char*)0;
 		}
+		if(cmd[i].bkgd==1)
+			cmd[i].arg[j-1]=(char*)0;
 	}
 	//cmd[2].arg[j][strlen(cmd.[2].arg[j])-1]=0;	
 	 //print out each command
+/*
 	for(i=0;i<ind;i++)
 		for(j=0;j<256&&cmd[i].arg[j]!=NULL;j++)
 			printf("cmd[%d].arg[%d]=%s\n",i,j,cmd[i].arg[j]);
-	
+*/	
 	return ind;
 
 }
@@ -602,7 +651,7 @@ void reaper()
     int status;
 	//kill(getpid(), SIGCONT);
 	//tcsetpgrp(STDIN_FILENO,getpgrp());
-	printf("in reaper!!!!!!!!!!!!!!!!1\n");
+//	printf("in reaper!!!!!!!!!!!!!!!!1\n");
     while(waitpid(0,&status,WNOHANG)>=0)
 		printf("r's while!!\n");
         
