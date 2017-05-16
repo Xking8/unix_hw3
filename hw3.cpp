@@ -11,10 +11,12 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <signal.h>
 #define MAXLINE 15000
 #define MAXBUFF 15000
 int outfd = fileno(stdout);
 int stdin_hlr;
+int astdin = dup(0);
 FILE *fp1; //to cat > file.txt
 
 typedef struct cmd
@@ -34,9 +36,12 @@ typedef struct npipe_msg
 void shell_service();
 int cmd_parser(char*,cmd_t*);
 void exec_cmd(cmd_t,int,int,int[][2],int,npipe_msg_t*,int[2],int,int[2],int,bool);
+void reaper();
+
 void move_npipemsg(npipe_msg_t*);
 int main()
 {
+    signal(SIGCHLD,(void (*)(int))reaper);
 	shell_service();
 }
 
@@ -185,6 +190,10 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int npipe_
 	pid=fork();
 	if(pid==0)
 	{
+        setpgid(0,getpid());
+        tcsetpgrp(astdin,getpid());
+        tcsetpgrp(fileno(stdout),getpid());
+        printf("???????????????????");
 		/*setsid();
 		chdir("/"); 
     	umask(0);*/
@@ -236,7 +245,7 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int npipe_
 		else
 		{
 
-			//printf("dup sockfd to stdout\n");
+			printf("dup sockfd to stdout\n");
 			dup2(sockfd,STDOUT_FILENO);
 		}
 		if(!excla)
@@ -268,8 +277,9 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int npipe_
 		exit(0);
 
 	}
-	else
+	else//parent
 	{
+        setpgid(pid,pid);
 		if(readpipe!=-1)
 		{
 			if(pipeA[readpipe][1]!=-1)
@@ -437,3 +447,10 @@ void move_npipemsg(npipe_msg_t* npipe_msg)
 		}	
 	}*/
 }
+void reaper()
+{
+    int status;
+    while(waitpid(0,&status,WNOHANG)>=0)
+        ;
+}
+
