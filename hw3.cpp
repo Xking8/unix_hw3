@@ -17,6 +17,8 @@
 int outfd = fileno(stdout);
 int stdin_hlr;
 int astdin = dup(0);
+bool canwait=0;
+int pgid=-1;
 FILE *fp1; //to cat mm.txt > file.txt
 FILE *fpin; // cat < mm.txt
 typedef struct cmd
@@ -40,8 +42,14 @@ int cmd_parser(char*,cmd_t*);
 void exec_cmd(cmd_t,int,int,int[][2],int[][2],int);
 //void exec_cmd(cmd_t,int,int,int[][2],int,npipe_msg_t*,int[2],int,int[2],int,bool);
 void reaper();
-
+void ttousig();
 void move_npipemsg(npipe_msg_t*);
+void ttousig()
+{
+	printf("CATCH TTOU SIG----------------------------\n");
+	fflush(stdout);
+		
+}
 int main()
 {
     signal(SIGCHLD,(void (*)(int))reaper);
@@ -76,6 +84,16 @@ void shell_service() {
 		int pipeTurn=0;
 		int pipeN[1000][2];
 
+		if (!strcmp(cmd[0].arg[0],"export"))
+		{
+			setenv(cmd[0].arg[1],cmd[0].arg[3],1);
+			continue;
+		}
+		else if (!strcmp(cmd[0].arg[0],"unset"))
+		{
+			unsetenv(cmd[0].arg[1]);
+			continue;
+		}
 		//int pipeN[1000][2];
 		//if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
 		//	fprintf(stderr,"pipe create error\n");
@@ -112,9 +130,15 @@ void shell_service() {
 
 
 		int i;
+		canwait=0;
+		pgid=-1;
 		for(i=0;i<num_of_cmd;i++)
 		{
-
+			if(i==num_of_cmd-1)
+			{
+				printf("set canwait~~~~~~~\n");
+				canwait=1;
+			}
 			dup2(stdin_hlr,0);
 			//printf("###stdin_hlr:%d\n",stdin_hlr);
 			//printf("processing %dth cmd\n",i);
@@ -238,124 +262,312 @@ void shell_service() {
 void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int pipeN[][2],int sockfd)
 //void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int** pipeA, int pipeN[][2],int sockfd)
 {
-	//dup2(sockfd,STDERR_FILENO);
-	int pid;
-	char filename[256];
-	pid=fork();
-	//signal(SIGTTOU, SIG_IGN);
-	if(pid==0)
+	if(!cmd.bkgd)
 	{
-		if(cmd.bkgd)
+		//dup2(sockfd,STDERR_FILENO);
+		int pid;
+		char filename[256];
+		pid=fork();
+		signal(SIGTTOU, SIG_IGN);
+		if(pid==0)
 		{
-			printf("call setsid\n");
-			fflush(stdout);
-			setsid();
+			if (pgid==-1)
+			{
+				pgid=getpid();
+				setpgid(0,pgid);
+			}
+			else
+				setpgid(0,pgid);
+			if(cmd.bkgd)
+			{
+				signal(SIGTTOU, SIG_DFL);
+				/*printf("call setsid\n");
+				fflush(stdout);
+				setsid();*/
+			}
+			else
+			{
+				//setpgid(0,getpid());
+				tcsetpgrp(STDIN_FILENO,getpgrp());
+			}
+			//raise(SIGSTOP);
+			//kill(getpid(),SIGCONT);
+			int readfd=STDIN_FILENO;
+			int writefd=sockfd;
+			//printf("-----------strlen=%d\n",strlen(cmd.arg[0]));
+			//printf("!!!!!cmd.arg[0][2]=%c!!!!\n",cmd.arg[0][2]);
+			//printf("readpipe=%d writepipe=%d\n",readpipe,writepipe);	
+			//cmd.arg[0][2]=0;
+			//printf("!!!!!cmd.arg[0][2]=%s\n",cmd.arg[0][2]);
+			//strcpy(filename,"/net/other/2017_1/0550722/ras/bin/");		
+			strcpy(filename,cmd.arg[0]);
+			if(readpipe!=-1)
+			{	
+				//printf("innnnnnnnnnnnnnnn\n");
+				close(pipeA[readpipe][1]);
+				//printf("after close\n");
+				//char tbuff[256];
+				//read(pipeA[readpipe][0],tbuff,256);
+				//printf("~~~~~~~~~~~~tbuff=%s\n",tbuff);
+				dup2(pipeA[readpipe][0],STDIN_FILENO);
+				close(pipeA[readpipe][0]);
+				pipeA[readpipe][0]=-1;
+				//close(pipeA[0][1]);
+				//dup2(pipeA[0][0],STDIN_FILENO);
+
+			}
+			else if (cmd.backarrow)
+			{
+				printf("**************dup fpin to stdIN\n");
+				dup2(fileno(fpin),STDIN_FILENO);
+			}
+
+			if(writepipe!=-1)
+			{
+				close(pipeA[writepipe][0]);
+				dup2(pipeA[writepipe][1],STDOUT_FILENO);
+				//close(pipeA[writepipe][1]);
+			}
+			else if (cmd.arrow)
+			{
+				//printf("**************dup fp1 to stdout\n");
+				dup2(fileno(fp1),STDOUT_FILENO);
+			}
+
+			else
+			{
+
+				//printf("@@@@@@@@\n");
+				dup2(sockfd,STDOUT_FILENO);
+			}
+			//printf("filename=%s\n",filename);
+			//printf("cmd.arg[0]=%s\ncmd.arg[1]=%s\n",cmd.arg[0],cmd.arg[1]);
+			if( execvp(filename,cmd.arg)<0)//,envp);
+			{
+				printf("Unknown command: [%s]\n",cmd.arg[0]);
+			}
+
+			//execvp(filename,cmd.arg);
+			//char* targ[]={"ls",(char*)0};
+			//execve("/net/other/2017_1/0550722/ras/bin/ls",targ,envp);
+			exit(0);
+
 		}
 		else
 		{
-			setpgid(0,getpid());
-			tcsetpgrp(STDIN_FILENO,getpgrp());
+			signal(SIGTTOU, SIG_IGN);
+			if(pgid==-1)
+			{
+				pgid=pid;
+				setpgid(pid,pid);
+			}
+			else
+				setpgid(pid,pgid);
+			if(cmd.bkgd) 
+			{
+				printf("parent set tcsetpgrp\n");
+				tcsetpgrp(STDIN_FILENO,getpgrp());
+			}
+			else
+			{
+				//setpgid(pid,pid);
+				tcsetpgrp(0,pid);
+			}
+			if(readpipe!=-1)
+			{
+				if(pipeA[readpipe][1]!=-1)
+				{
+					close(pipeA[readpipe][1]);
+					//close(pipeA[readpipe][0]);
+					pipeA[readpipe][1]=-1;//must assign -1 when close otherwise will be ambiguise
+					//printf("assign pipeA[%d][1]=%d liao\n",readpipe,pipeA[readpipe][1]);
+				}
+				
+				close(pipeA[readpipe][0]);
+				pipeA[readpipe][0]=-1;
+				//printf("assign pipeA[%d][0]=%d liao\n",readpipe,pipeA[readpipe][0]);
+			}
+			if(writepipe!=-1)
+				if(pipeA[writepipe][1]!=-1)
+				{
+					close(pipeA[writepipe][1]);
+					pipeA[writepipe][1]=-1;
+					//printf("assign pipeA[%d][1]=%d liao\n",writepipe,pipeA[writepipe][1]);
+				}
+			//close(pipeA[readpipe][0]);
+			//close(pipeA[readpipe][0]);
+			//printf("before wait\n");
+			if(canwait)
+			{
+				int killgr = pgid*-1;
+				int status;
+				printf("before wait%d\n",killgr);
+				//waitpid(killgr,&status,WNOHANG|WUNTRACED);
+				//waitpid(killgr,&status,0);
+				//waitpid(killgr,&status,WEXITED);
+				wait(0);
+				printf("after wait\n");
+			}
+			if(!cmd.bkgd)
+			{
+				tcsetpgrp(STDIN_FILENO,getpid());
+			}
+			//tcsetpgrp(STDIN_FILENO,getpid());
+			//if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
+			//	fprintf(stderr,"pipe create error\n");
+
+			//char tbuff[20];
+			//read(pipeA[writepipe][0],tbuff,20);
+			//printf("!~~~~~~~~~~~~tbuff=%s\n",tbuff);
+
+			//printf("after wait\n");
 		}
-		//raise(SIGSTOP);
-		//kill(getpid(),SIGCONT);
-		int readfd=STDIN_FILENO;
-		int writefd=sockfd;
-		//printf("-----------strlen=%d\n",strlen(cmd.arg[0]));
-		//printf("!!!!!cmd.arg[0][2]=%c!!!!\n",cmd.arg[0][2]);
-		//printf("readpipe=%d writepipe=%d\n",readpipe,writepipe);	
-		//cmd.arg[0][2]=0;
-		//printf("!!!!!cmd.arg[0][2]=%s\n",cmd.arg[0][2]);
-		//strcpy(filename,"/net/other/2017_1/0550722/ras/bin/");		
-		strcpy(filename,cmd.arg[0]);
-		if(readpipe!=-1)
-		{	
-			//printf("innnnnnnnnnnnnnnn\n");
-			close(pipeA[readpipe][1]);
-			//printf("after close\n");
-			//char tbuff[256];
-			//read(pipeA[readpipe][0],tbuff,256);
-			//printf("~~~~~~~~~~~~tbuff=%s\n",tbuff);
-			dup2(pipeA[readpipe][0],STDIN_FILENO);
-			close(pipeA[readpipe][0]);
-			pipeA[readpipe][0]=-1;
-			//close(pipeA[0][1]);
-			//dup2(pipeA[0][0],STDIN_FILENO);
-
-		}
-		else if (cmd.backarrow)
-        {
-            printf("**************dup fpin to stdIN\n");
-            dup2(fileno(fpin),STDIN_FILENO);
-        }
-
-		if(writepipe!=-1)
-		{
-			close(pipeA[writepipe][0]);
-			dup2(pipeA[writepipe][1],STDOUT_FILENO);
-			//close(pipeA[writepipe][1]);
-		}
-		else if (cmd.arrow)
-        {
-            //printf("**************dup fp1 to stdout\n");
-            dup2(fileno(fp1),STDOUT_FILENO);
-        }
-
-		else
-		{
-
-			//printf("@@@@@@@@\n");
-			dup2(sockfd,STDOUT_FILENO);
-		}
-		//printf("filename=%s\n",filename);
-		//printf("cmd.arg[0]=%s\ncmd.arg[1]=%s\n",cmd.arg[0],cmd.arg[1]);
-		execvp(filename,cmd.arg);
-		//char* targ[]={"ls",(char*)0};
-		//execve("/net/other/2017_1/0550722/ras/bin/ls",targ,envp);
-		exit(0);
-
 	}
+///////////////////////////////////////////////////
 	else
 	{
-		signal(SIGTTOU, SIG_IGN);
-		if(!cmd.bkgd) 
+		//dup2(sockfd,STDERR_FILENO);
+		int pid;
+		char filename[256];
+		pid=fork();
+		//signal(SIGTTOU, SIG_IGN);
+    	signal(SIGTTOU,(void (*)(int))ttousig);
+		if(pid==0)
 		{
-			setpgid(pid,pid);
-			tcsetpgrp(0,pid);
-		}
-		if(readpipe!=-1)
-		{
-			if(pipeA[readpipe][1]!=-1)
+			setpgid(0,getpid());
+			if(cmd.bkgd)
 			{
+				signal(SIGTTOU, SIG_DFL);
+				/*printf("call setsid\n");
+				fflush(stdout);
+				setsid();*/
+			}
+			else
+			{
+				//setpgid(0,getpid());
+				tcsetpgrp(STDIN_FILENO,getpgrp());
+			}
+			//raise(SIGSTOP);
+			//kill(getpid(),SIGCONT);
+			int readfd=STDIN_FILENO;
+			int writefd=sockfd;
+			//printf("-----------strlen=%d\n",strlen(cmd.arg[0]));
+			//printf("!!!!!cmd.arg[0][2]=%c!!!!\n",cmd.arg[0][2]);
+			//printf("readpipe=%d writepipe=%d\n",readpipe,writepipe);	
+			//cmd.arg[0][2]=0;
+			//printf("!!!!!cmd.arg[0][2]=%s\n",cmd.arg[0][2]);
+			//strcpy(filename,"/net/other/2017_1/0550722/ras/bin/");		
+			strcpy(filename,cmd.arg[0]);
+			if(readpipe!=-1)
+			{	
+				//printf("innnnnnnnnnnnnnnn\n");
 				close(pipeA[readpipe][1]);
-				//close(pipeA[readpipe][0]);
-				pipeA[readpipe][1]=-1;//must assign -1 when close otherwise will be ambiguise
-				//printf("assign pipeA[%d][1]=%d liao\n",readpipe,pipeA[readpipe][1]);
+				//printf("after close\n");
+				//char tbuff[256];
+				//read(pipeA[readpipe][0],tbuff,256);
+				//printf("~~~~~~~~~~~~tbuff=%s\n",tbuff);
+				dup2(pipeA[readpipe][0],STDIN_FILENO);
+				close(pipeA[readpipe][0]);
+				pipeA[readpipe][0]=-1;
+				//close(pipeA[0][1]);
+				//dup2(pipeA[0][0],STDIN_FILENO);
+
 			}
-			
-			close(pipeA[readpipe][0]);
-			pipeA[readpipe][0]=-1;
-			//printf("assign pipeA[%d][0]=%d liao\n",readpipe,pipeA[readpipe][0]);
-		}
-		if(writepipe!=-1)
-			if(pipeA[writepipe][1]!=-1)
+			else if (cmd.backarrow)
 			{
-				close(pipeA[writepipe][1]);
-				pipeA[writepipe][1]=-1;
-				//printf("assign pipeA[%d][1]=%d liao\n",writepipe,pipeA[writepipe][1]);
+				printf("**************dup fpin to stdIN\n");
+				dup2(fileno(fpin),STDIN_FILENO);
 			}
-		//close(pipeA[readpipe][0]);
-		//close(pipeA[readpipe][0]);
-		//printf("before wait\n");
-		wait(0);
-		tcsetpgrp(STDIN_FILENO,getpid());
-		//if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
-		//	fprintf(stderr,"pipe create error\n");
 
-		//char tbuff[20];
-		//read(pipeA[writepipe][0],tbuff,20);
-		//printf("!~~~~~~~~~~~~tbuff=%s\n",tbuff);
+			if(writepipe!=-1)
+			{
+				close(pipeA[writepipe][0]);
+				dup2(pipeA[writepipe][1],STDOUT_FILENO);
+				//close(pipeA[writepipe][1]);
+			}
+			else if (cmd.arrow)
+			{
+				//printf("**************dup fp1 to stdout\n");
+				dup2(fileno(fp1),STDOUT_FILENO);
+			}
 
-		//printf("after wait\n");
+			else
+			{
+
+				//printf("@@@@@@@@\n");
+				dup2(sockfd,STDOUT_FILENO);
+			}
+			//printf("filename=%s\n",filename);
+			//printf("cmd.arg[0]=%s\ncmd.arg[1]=%s\n",cmd.arg[0],cmd.arg[1]);
+			if( execvp(filename,cmd.arg)<0)//,envp);
+			{
+				printf("Unknown command: [%s]\n",cmd.arg[0]);
+			}
+
+			//execvp(filename,cmd.arg);
+			//char* targ[]={"ls",(char*)0};
+			//execve("/net/other/2017_1/0550722/ras/bin/ls",targ,envp);
+			exit(0);
+
+		}
+		else
+		{
+			signal(SIGTTOU, SIG_IGN);
+			setpgid(pid,pid);
+			if(cmd.bkgd) 
+			{
+				printf("parent set tcsetpgrp\n");
+				tcsetpgrp(STDIN_FILENO,getpgrp());
+			}
+			else
+			{
+				//setpgid(pid,pid);
+				tcsetpgrp(0,pid);
+			}
+			if(readpipe!=-1)
+			{
+				if(pipeA[readpipe][1]!=-1)
+				{
+					close(pipeA[readpipe][1]);
+					//close(pipeA[readpipe][0]);
+					pipeA[readpipe][1]=-1;//must assign -1 when close otherwise will be ambiguise
+					//printf("assign pipeA[%d][1]=%d liao\n",readpipe,pipeA[readpipe][1]);
+				}
+				
+				close(pipeA[readpipe][0]);
+				pipeA[readpipe][0]=-1;
+				//printf("assign pipeA[%d][0]=%d liao\n",readpipe,pipeA[readpipe][0]);
+			}
+			if(writepipe!=-1)
+				if(pipeA[writepipe][1]!=-1)
+				{
+					close(pipeA[writepipe][1]);
+					pipeA[writepipe][1]=-1;
+					//printf("assign pipeA[%d][1]=%d liao\n",writepipe,pipeA[writepipe][1]);
+				}
+			//close(pipeA[readpipe][0]);
+			//close(pipeA[readpipe][0]);
+			//printf("before wait\n");
+			//if(!cmd.bkgd)
+			{
+				tcsetpgrp(STDIN_FILENO,getpid());
+				printf("before wait\n");
+				int status;
+				waitpid(0,&status,WEXITED);
+				//wait(0);
+				printf("before wait\n");
+				//tcsetpgrp(STDIN_FILENO,getpid());
+			}
+			//tcsetpgrp(STDIN_FILENO,getpid());
+			//if(pipe(pipeA[0])<0||pipe(pipeA[1])<0)
+			//	fprintf(stderr,"pipe create error\n");
+
+			//char tbuff[20];
+			//read(pipeA[writepipe][0],tbuff,20);
+			//printf("!~~~~~~~~~~~~tbuff=%s\n",tbuff);
+
+			//printf("after wait\n");
+		}
 	}
 
 	
@@ -521,6 +733,8 @@ void exec_cmd(cmd_t cmd, int readpipe, int writepipe, int pipeA[][2], int npipe_
 */
 int cmd_parser(char* line, cmd_t* cmd)
 {
+	printf("in parser\n");
+	fflush(stdout);
 	int ind=0;
 	if(line[0]==0)
 	{
@@ -578,7 +792,10 @@ int cmd_parser(char* line, cmd_t* cmd)
 			cmd[i].arg[j]=strtok(NULL," \n");
 			if(!strcmp(cmd[i].arg[j-1],"&"))
 			{
+				printf("in parser2\n");
+				fflush(stdout);
 				cmd[i].bkgd=1;
+				//j=j-1;
 				//cmd[i].arg[j-1]=(char*)0;
 			}
 			if(!strcmp(cmd[i].arg[j-1],">"))
@@ -587,6 +804,7 @@ int cmd_parser(char* line, cmd_t* cmd)
 				//j--;
 				fp1=fopen(cmd[i].arg[j],"w+");
 				cmd[i].arrow=1;
+				j=j-2;
 			}
 			if(!strcmp(cmd[i].arg[j-1],"<"))
 			{
@@ -594,6 +812,7 @@ int cmd_parser(char* line, cmd_t* cmd)
 				//j--;
 				fpin=fopen(cmd[i].arg[j],"rb+");
 				cmd[i].backarrow=1;
+				j=j-2;
 			}
 			else if(!strcmp(cmd[i].arg[j-1],">>"))
 			{
@@ -601,30 +820,36 @@ int cmd_parser(char* line, cmd_t* cmd)
 				//j--;
 				fp1=fopen(cmd[i].arg[j],"a+");
 				cmd[i].arrow=1;
+				j=j-2;
 			}
 			if(cmd[i].arg[j]==NULL)
 			{
-				//printf("at %d %d break\n",i,j);
+				printf("at %d %d break\n",i,j);
 				break;
 			}
 		}
 		cmd[i].arg[j]=(char*)0;
-		if(cmd[i].arrow==1 ||cmd[i].backarrow==1 )
+		/*
+		if( (cmd[i].arrow==1 ||cmd[i].backarrow==1) && cmd[i].bkgd==0)
 		{
 			cmd[i].arg[j-1]=(char*)0;
 
 			cmd[i].arg[j-2]=(char*)0;
 		}
+		*/
 		if(cmd[i].bkgd==1)
 			cmd[i].arg[j-1]=(char*)0;
 	}
 	//cmd[2].arg[j][strlen(cmd.[2].arg[j])-1]=0;	
 	 //print out each command
-/*
+
 	for(i=0;i<ind;i++)
 		for(j=0;j<256&&cmd[i].arg[j]!=NULL;j++)
+		{
 			printf("cmd[%d].arg[%d]=%s\n",i,j,cmd[i].arg[j]);
-*/	
+			fflush(stdout);
+		}
+	
 	return ind;
 
 }
@@ -648,12 +873,15 @@ void move_npipemsg(npipe_msg_t* npipe_msg)
 }
 void reaper()
 {
+
     int status;
 	//kill(getpid(), SIGCONT);
 	//tcsetpgrp(STDIN_FILENO,getpgrp());
-//	printf("in reaper!!!!!!!!!!!!!!!!1\n");
-    while(waitpid(0,&status,WNOHANG)>=0)
-		printf("r's while!!\n");
-        
+	printf("in reaper!!!!!!!!!!!!!!!!1\n");
+	int id = pgid*-1;
+    while(waitpid(id,&status,WNOHANG)>=0)
+		//printf("r's while!!\n");
+		;
+       
 }
 
